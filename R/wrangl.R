@@ -133,7 +133,7 @@ full <-
 play <- 
   full %>%
   st_transform(2163) %>% 
-  arrange(Y) %>%
+  arrange(Y, X) %>%
   rownames_to_column() %>%
   mutate(rowname = as.numeric(rowname)) %>%
   select(-X, -Y) %>%
@@ -149,6 +149,24 @@ frst_degree <-
   transmute(row_id = as.numeric(rowname),
             col_id = x)
 
+## one way
+scnd_degree <- 
+  frst_degree %>%
+  rename(id = row_id,
+         row_id = col_id) %>%
+  left_join(frst_degree) %>%
+  transmute(id = id,
+            row_id = col_id) %>%
+  left_join(frst_degree) %>%
+  transmute(id = id,
+            rowname = col_id) %>%
+  group_by(id) %>%
+  distinct(rowname, .keep_all = TRUE) %>%
+  ungroup() %>%
+  left_join(play) %>%
+  st_as_sf()
+
+## another way
 scnd_degree <-
   frst_degree %>%
   rename(id = row_id,
@@ -180,19 +198,18 @@ final <-
   mutate(geometry = geom) %>%
   st_as_sf()
 
-##
-
+## packages for a quick demonstration
 library(scico)
 library(gganimate)
 
-##
-
+## make a background
 background <- 
   full %>%
   st_transform(2163) %>%
   st_union() %>%
   st_combine()
 
+## animate it
 windows <- 
   ggplot(final) +
   geom_sf(data = background,
