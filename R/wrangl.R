@@ -97,6 +97,16 @@ labs <- tribble(~variable, ~name,
                 "B27010_066", "health_insurance_4",
                 "B27010_001", "health_insurance_total")
 
+# demography <- 
+#   reduce(
+#     map(2014:2018, 
+#         function(x){
+#           get_acs(geography = 'county', variables = labs$variable, year = x) %>%
+#             mutate(year = x )
+#         }), 
+#     rbind
+#   )
+
 demography <- get_acs(geography = 'county', variables = labs$variable, year = 2018)
 
 right <- 
@@ -287,6 +297,5 @@ nn_interpolate <- function(data, depth = 5) {
   
 }
 
-nn_interpolate(full, 3)
-
-
+## smoothing
+infill <- nn_interpolate(full, 3) 
