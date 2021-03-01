@@ -96,6 +96,14 @@ landcover %>%
   rmapshaper::ms_simplify(0.05) %>% 
   plot()
 
+## clean it up
+lcd <- 
+  landcover %>% 
+  mutate(development = hidev + medev + lodev + nodev,
+         wilderness = barren + forest + shrubs) %>%
+  replace_na(list(shrubs = 0, development = 0, barren = 0, crop = 0, forest = 0, water = 0)) %>%
+  select(-hidev, -medev, -lodev, -nodev, -barren, -forest, -shrubs) 
+
 ## join census data
 vars <- load_variables(2018, 'acs5')
 test <- vars %>% filter(str_detect(str_to_lower(label), "gini"))
@@ -217,11 +225,15 @@ ggplot(aca) +
   ggsave("insurancexyear.png", height = 6, width = 8, dpi = 300)
 
 ## putting it all together
-left <- 
+right <- 
   census %>% 
+  st_drop_geometry() %>%
   left_join(bls) %>% 
   left_join(aca) %>% 
-  select(GEOID, year, X, Y, everything(), geometry)
+  left_join(lcd) %>%
+  select(GEOID, year, X, Y, everything()) %>% 
+  left_join(counties) %>% 
+  st_as_sf()
 
 full <- 
   left %>%
@@ -389,4 +401,14 @@ nn_interpolate <- function(data, depth = 5) {
 }
 
 ## smoothing
-infill <- nn_interpolate(full, 3) 
+infill <- nn_interpolate(full, 3)
+
+## other means of interpolation
+library(matrixStats)
+library(VIM)
+
+## regression
+full_naz <- kNN(st_drop_geometry(full), variable = names(st_drop_geometry(full)), dist_var = c("X", "Y", "population", "density"),
+                imp_var = FALSE,
+                numFun = weightedMean, weightDist = TRUE, k = 10)
+
