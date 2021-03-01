@@ -42,6 +42,13 @@ left <-
   clean_names() %>% 
   rename(GEOID = fips)
 
+## quick plot
+ggplot(left) +
+  geom_line(aes(year, years_of_potential_life_lost_rate, group = GEOID), colour = '#E5E5E3') +
+  stat_summary(aes(year, years_of_potential_life_lost_rate), fun.y = mean, geom = 'line', size = 2) +
+  labs(title = "Years of Potential Life Lost", x = "", y = "") +
+  theme_hor()
+
 ## attach geographies
 counties <- counties(cb = TRUE, class = 'sf')
 counties <- 
@@ -77,6 +84,18 @@ landcover <-
   st_drop_geometry() %>%
   pivot_wider(names_from = variable, values_from = value)
 
+## plot to check
+landcover %>% 
+  mutate(development = hidev + medev + lodev + nodev) %>%
+  replace_na(list(shrubs = 0, development = 0, barren = 0, crop = 0, forest = 0, water = 0)) %>%
+  select(-hidev, -medev, -lodev, -nodev) %>%
+  left_join(counties) %>%
+  st_as_sf() %>% 
+  st_transform(2163) %>% 
+  select(barren:development) %>%
+  rmapshaper::ms_simplify(0.05) %>% 
+  plot()
+
 ## join census data
 vars <- load_variables(2018, 'acs5')
 test <- vars %>% filter(str_detect(str_to_lower(label), "gini"))
@@ -88,49 +107,121 @@ labs <- tribble(~variable, ~name,
                 "B19083_001", "gini",
                 "B02001_002", "white",
                 "B02001_003", "black",
-                "C18120_002", "labor_force",
-                "C18120_003", "employed",
-                "C18120_006", "unemployed",
                 "B27010_017", "health_insurance_1",
                 "B27010_033", "health_insurance_2",
                 "B27010_050", "health_insurance_3",
                 "B27010_066", "health_insurance_4",
                 "B27010_001", "health_insurance_total")
 
-# demography <- 
-#   reduce(
-#     map(2014:2018, 
-#         function(x){
-#           get_acs(geography = 'county', variables = labs$variable, year = x) %>%
-#             mutate(year = x )
-#         }), 
-#     rbind
-#   )
+demography <-
+  reduce(
+    map(2010:2018,
+        function(x){
+          get_acs(geography = 'county', variables = labs$variable[1:6], year = x) %>%
+            mutate(year = x )
+        }),
+    rbind
+  )
 
-demography <- get_acs(geography = 'county', variables = labs$variable, year = 2018)
+## adding insurance data 
+insurance <-
+  reduce(
+    map(2014:2018,
+        function(x){
+          get_acs(geography = 'county', variables = labs$variable[7:nrow(labs)], year = x) %>%
+            mutate(year = x )
+        }),
+    rbind
+  )
 
-right <- 
-  demography %>% 
+## plus employment data
+jobs <-
+  reduce(
+    map(10:18, function(x) {
+      glue("https://www.bls.gov/lau/laucnty{x}.txt") %>%
+        read_table(skip = 5, col_names = FALSE) %>%
+        set_names("laus_code", "statefp", "countyfp", "name", "year", "labour_force", "employed", "unemployed", "rate" ) %>% 
+        select(-laus_code, -name) %>%
+        mutate(GEOID = paste(statefp, countyfp, sep = "")) %>%
+        select(GEOID, year, everything())
+    }), 
+    bind_rows
+  )
+
+## blending it all together
+census <- 
+  demography %>%
+  group_by(year) %>% 
+  group_split() %>% 
+  map_df(., function(x){
+    x %>%
+      left_join(labs) %>% 
+      transmute(GEOID, 
+                year, 
+                variable = name,
+                value = estimate) %>%
+      pivot_wider(names_from = "variable", values_from = "value") %>%
+      left_join(counties) %>%
+      st_as_sf() %>%
+      mutate(area = st_area(geometry),
+             area = units::set_units(area, km2)) %>%
+      transmute(GEOID, 
+                year = year,
+                population, 
+                density = units::drop_units(population / area), 
+                nonwhite = white / population,
+                college = college_degree / population, 
+                income = median_income,
+                gini,
+                X, Y, 
+                geometry)
+  })
+
+## bls data 
+bls <- transmute(jobs, GEOID, year, unemployment_rate = rate)
+
+## how is employment over the years
+ggplot(bls) + 
+  geom_density(aes(x = unemployment_rate, fill = factor(year), colour = factor(year)), 
+               alpha = 0.5) + 
+  scale_fill_manual(values = scico::scico(9, palette = 'tokyo'), name = 'year') +
+  scale_colour_manual(values = scico::scico(9, palette = 'tokyo'), name = 'year') +
+  labs(title = "distribution of unemployment by county by year") + 
+  xlab("") +
+  ylab("") + 
+  theme_hor() +
+  ggsave("workxyear.png", height = 6, width = 8, dpi = 300)
+
+## now for the aca
+aca <-
+  insurance %>%
   left_join(labs) %>% 
   transmute(GEOID, 
+            year, 
             variable = name,
             value = estimate) %>%
   pivot_wider(names_from = "variable", values_from = "value") %>%
-  left_join(counties) %>%
-  st_as_sf() %>%
-  mutate(area = st_area(geometry),
-         area = units::set_units(area, km2)) %>%
-  transmute(GEOID, 
-            population, 
-            density = units::drop_units(population / area), 
-            nonwhite = white / population,
-            college = college_degree / population, 
-            unemployment = unemployed / labor_force,
-            income = median_income,
-            gini,
-            uninsured = (health_insurance_1 + health_insurance_2 + health_insurance_3 + health_insurance_4) / health_insurance_total,
-            X, Y, 
-            geometry)
+  transmute(GEOID, year,
+            uninsured_rate = (health_insurance_1 + health_insurance_2 + health_insurance_3 + health_insurance_4) / health_insurance_total)
+
+## the ACA really worked?  
+ggplot(aca) + 
+  geom_density(aes(x = uninsured_rate, fill = factor(year), colour = factor(year)), 
+               alpha = 0.5, bins = 50) + 
+  scale_fill_manual(values = scico::scico(5, palette = 'tokyo'), name = 'year') +
+  scale_colour_manual(values = scico::scico(5, palette = 'tokyo'), name = 'year') +
+  labs(title = "distribution of uninsurance rates by county by year") + 
+  xlab("") +
+  ylab("") + 
+  theme_hor() +
+  ggsave("insurancexyear.png", height = 6, width = 8, dpi = 300)
+
+## putting it all together
+left <- 
+  census %>% 
+  left_join(bls) %>% 
+  left_join(aca) %>% 
+  select(GEOID, year, X, Y, everything(), geometry)
 
 full <- 
   left %>%
